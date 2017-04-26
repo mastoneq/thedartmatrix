@@ -9,6 +9,10 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 library(xtable)
 library(ggplot2)
+library(pROC)
+
+old_locale <- Sys.getlocale()
+Sys.setlocale('LC_ALL','C')
 ```
 
 This is the start of Dan's effort on the final project for CBB750. The intention of this document is to perform some exploratory data analysis and to create summary slides for the presentation.
@@ -31,6 +35,11 @@ x[,char] <- lapply(x[char], as.character)
 x[,int] <- lapply(x[int], as.integer)
 x[,num] <- lapply(x[num], as.numeric)
 
+# Tidy up
+rm(factors)
+rm(char)
+rm(int)
+rm(num)
 ```
 
 Let's look at a quick table of when `fits_matrix` is called and when the DART consult is called.
@@ -39,6 +48,8 @@ Let's look at a quick table of when `fits_matrix` is called and when the DART co
 table(x$fits_matrix)
 print(xtable(table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)),
       comment = FALSE)
+
+table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)
 ```
 
 I don't understand why `consult_dart` is 0-3.
@@ -52,10 +63,61 @@ tmeans <- data.frame(var = names(means), perc_occurrence = t(means))
 ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
   geom_bar(stat = "identity", aes(fill = perc_occurrence)) +
   coord_flip() +
-  labs(y = "Percent Occurence",
+  labs(y = "Fraction Occurence",
        x = "Observation") +
   theme_bw() +
   theme(legend.position = "none")+
-  ggsave("var_percOccurrence.pdf")
+  ggsave("var_fracOccurrence.png", height = 4, width = 7.5)
+
+# Tidy up
+rm(mat)
+rm(means)
+rm(tmeans)
+```
+
+This should possibly be revisited after aggregating the three "bruise" cateroriges `br_neck`, `br_torso` and `br_ear`, which are a single predictor variable in determining if the DART consult team should be called.
+
+```{r prelim nlp}
+# Convert notes into a list of word strings
+notes <- vector(mode = "list", length = nrow(x))
+for (i in 1:nrow(x)) {
+  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split ="\\N", fixed = TRUE))
+}
+
+# Search for DART
+dart <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Dd][Aa][Rr][Tt]", x)))))
+
+# Confusion matrix for using the presence of the word DART as a predictor of dart_consult
+table(dart, x$consult_dart)
+```
+
+```{r}
+# Convert to bindary of called or not called (collapse 2 and 3 into 1)
+consult_dart_binary <- ifelse(as.numeric(as.character(x$consult_dart)) >= 1, 1, 0)
+
+# Create ROC curve for predicting dart call by fits_matrix vs DART grep
+roc_fits <- roc(response = consult_dart_binary, predictor = as.numeric(as.character(x$fits_matrix)))
+roc_dartgrep <- roc(response = consult_dart_binary, predictor = dart)
+
+plotdf <- data.frame(dart_sp = roc_dartgrep$specificities, dart_sen = roc_dartgrep$sensitivities, 
+                     mat_sp = roc_fits$specificities, mat_sen = roc_fits$sensitivities)
+ggplot(plotdf, aes(plotdf)) +
+  geom_line(aes(x = dart_sp, y = dart_sen, color = "red")) +
+  geom_line(aes(x = mat_sp, y = mat_sen, color = "blue")) +
+  scale_x_reverse() +
+  labs(x = "Specificity",
+       y = "Sensitivity") +
+  scale_color_discrete(name="Method",
+                         breaks=c("blue", "red"),
+                         labels=c("Fits Matrix", "Grep for DART")) +
+  ggsave("grepDART_roc.png")
+```
+
+```{r prediction error}
+# Error using grep
+1- mean(consult_dart_binary == dart)
+
+# Error just using if it fits the matrix
+1- mean(x$fits_matrix == consult_dart_binary)
 ```
 
