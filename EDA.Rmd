@@ -52,8 +52,6 @@ print(xtable(table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)),
 table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)
 ```
 
-I don't understand why `consult_dart` is 0-3.
-
 Now I'll look at the frequency of the predictor variables.
 
 ```{r}
@@ -88,7 +86,7 @@ for (i in 1:nrow(x)) {
 dart <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Dd][Aa][Rr][Tt]", x)))))
 
 # Confusion matrix for using the presence of the word DART as a predictor of dart_consult
-table(dart, x$consult_dart)
+table(dart, consult_dart = x$consult_dart)
 ```
 
 ```{r}
@@ -101,16 +99,18 @@ roc_dartgrep <- roc(response = consult_dart_binary, predictor = dart)
 
 plotdf <- data.frame(dart_sp = roc_dartgrep$specificities, dart_sen = roc_dartgrep$sensitivities, 
                      mat_sp = roc_fits$specificities, mat_sen = roc_fits$sensitivities)
+
 ggplot(plotdf, aes(plotdf)) +
   geom_line(aes(x = dart_sp, y = dart_sen, color = "red")) +
   geom_line(aes(x = mat_sp, y = mat_sen, color = "blue")) +
   scale_x_reverse() +
   labs(x = "Specificity",
        y = "Sensitivity") +
+  theme_bw() +
   scale_color_discrete(name="Method",
                          breaks=c("blue", "red"),
                          labels=c("Fits Matrix", "Grep for DART")) +
-  ggsave("grepDART_roc.png")
+  ggsave("grepDART_roc.png", height = 4, width = 7.5)
 ```
 
 ```{r prediction error}
