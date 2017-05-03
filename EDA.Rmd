@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(xtable)
 library(ggplot2)
 library(pROC)
+library(RColorBrewer)
 
 old_locale <- Sys.getlocale()
 Sys.setlocale('LC_ALL','C')
@@ -55,7 +56,7 @@ table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)
 Now I'll look at the frequency of the predictor variables.
 
 ```{r}
-mat <- data.frame(lapply(x[,5:21], as.numeric))
+mat <- data.frame(lapply(x[,5:22], as.numeric))
 means <- data.frame(lapply(mat, function(x) mean(x-1, na.rm = TRUE)))
 tmeans <- data.frame(var = names(means), perc_occurrence = t(means))
 ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
@@ -64,16 +65,55 @@ ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
   labs(y = "Fraction Occurence",
        x = "Observation") +
   theme_bw() +
-  theme(legend.position = "none")+
+  theme(legend.position = "none") +
   ggsave("var_fracOccurrence.png", height = 4, width = 7.5)
 
 # Tidy up
 rm(mat)
 rm(means)
-rm(tmeans)
+# rm(tmeans)
 ```
 
-This should possibly be revisited after aggregating the three "bruise" cateroriges `br_neck`, `br_torso` and `br_ear`, which are a single predictor variable in determining if the DART consult team should be called.
+I'll try coloring these bars by the predictive accuracy
+
+```{r}
+# Collapse 2 into 1 and 3 into 0
+dart_collapsed <- x$consult_dart
+for (i in 1:nrow(x)) {
+  if (dart_collapsed[i] == 2){
+    dart_collapsed[i] <- 1
+  }
+  if (dart_collapsed[i] == 3){
+    dart_collapsed[i] <- 0
+  }
+}
+dart_collapsed <- factor(dart_collapsed)
+
+# Find the predictive accuracy of each var
+predacc <- apply(x[,5:22], 2, function(x) mean(x == dart_collapsed))
+predacc[is.na(predacc)] <- 0
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sf <- scale_color_gradientn(colors = myPalette(100), limits=c(0.64,0.86))
+
+ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
+  geom_point(stat = "identity", aes(color = predacc, size = predacc)) +
+  coord_flip() +
+  labs(y = "Fraction Occurence",
+       x = "Observation",
+       color = "DART\nPrediction\nAccuracy",
+       size = "DART\nPrediction\nAccuracy") +
+  theme_bw() +
+  sf +
+  ggsave("var_fracOccurrence_predAcc.png", height = 4, width = 7.5)
+
+# Garbage collection
+rm(myPalette)
+rm(predacc)
+rm(sf)
+rm(tmeans)
+rm(dart_collapsed)
+```
 
 ```{r prelim nlp}
 # Convert notes into a list of word strings
