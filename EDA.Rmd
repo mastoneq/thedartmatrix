@@ -10,7 +10,8 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 
 # Load the required packages
 list.of.packages <- c("xtable", "ggplot2", "pROC", "RColorBrewer", "corrplot", 
-                      "randomForest", "nnet", "lmtest", "e1071", "caret")
+                      "randomForest", "nnet", "lmtest", "e1071", "caret", "tm",
+                      "SnowballC")
 new.packages <- list.of.packages[!(list.of.packages %in% 
                                      installed.packages()[,"Package"])]
 
@@ -22,6 +23,9 @@ lapply(list.of.packages, require, character.only = TRUE)
 
 # Set seed
 set.seed(12345)
+
+# Locale problem causing unicode string splitting errors
+Sys.setlocale('LC_ALL','C') 
 ```
 
 This is the start of Dan's effort on the final project for CBB750. The intention of this document is to perform some exploratory data analysis and to create summary slides for the presentation.
@@ -29,6 +33,19 @@ This is the start of Dan's effort on the final project for CBB750. The intention
 ```{r}
 # Read in data 
 x <- read.csv("TheDartMatrix-deidentified.csv", as.is = TRUE)
+
+# Convert DART to binary
+# Collapse 2 into 1 and 3 into 0
+dart_collapsed <- x$consult_dart
+for (i in 1:nrow(x)) {
+  if (dart_collapsed[i] == 2){
+    dart_collapsed[i] <- 1
+  }
+  if (dart_collapsed[i] == 3){
+    dart_collapsed[i] <- 0
+  }
+}
+x$consult_dart <- factor(dart_collapsed)
 
 # Read in variable key that defines classes
 key <- read.csv("variable_key.csv")
@@ -187,27 +204,11 @@ rm(rf0)
 
 Now I'll start trying to predict the variables. I'll start with `consult_dart`.
 
-```{r pred skullfx}
-table(skullfx = x$skullfx, tst_ct = x$tst_ct)
-table(skullfx = x$skullfx, tst_ct = x$tst_mri)
-
-notes <- vector(mode = "list", length = nrow(x))
-for (i in 1:nrow(x)) {
-  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split ="\\N", fixed = TRUE))
-}
-
-# Search for DART
-skullfx <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Ff]racture", x)))))
-
-table(skullfx, x$skullfx)
-```
-
-
 ```{r pred consult_dart}
 # Convert notes into a list of word strings
 notes <- vector(mode = "list", length = nrow(x))
 for (i in 1:nrow(x)) {
-  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split ="\\N", fixed = TRUE))
+  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split = "\\\\N", fixed = TRUE))
 }
 
 # Search for DART
@@ -257,12 +258,9 @@ predError <- rbind(predError, c("SVM Radial Kernel", mean(p3 != test$consult_dar
 ```
 
 ```{r roc curve for dart models}
-# Convert to bindary of called or not called (collapse 2 and 3 into 1)
-consult_dart_binary <- ifelse(as.numeric(as.character(x$consult_dart)) >= 1, 1, 0)
-
 # Create ROC curve for predicting dart call by fits_matrix vs DART grep
-roc_fits <- roc(response = consult_dart_binary, predictor = as.numeric(as.character(x$fits_matrix)))
-roc_dartgrep <- roc(response = consult_dart_binary, predictor = dart)
+roc_fits <- roc(response = x$consult_dart, predictor = as.numeric(as.character(x$fits_matrix)))
+roc_dartgrep <- roc(response = x$consult_dart, predictor = dart)
 
 plotdf <- data.frame(dart_sp = roc_dartgrep$specificities, dart_sen = roc_dartgrep$sensitivities, 
                      mat_sp = roc_fits$specificities, mat_sen = roc_fits$sensitivities)
@@ -352,22 +350,104 @@ test <- c[-s,]
 
 rf5 <- randomForest(factor(consult_dart_dg) ~ . , train, mtry=ncol(c)-1, importance=TRUE, do.trace = 100)
 
+prf5 <- predict(rf5, test)
 
 ### ERROR IS 1! TOO FEW VALUES TO ESTIMATE ACCURACY!
 rferr <- mean(test$consult_dart_dg != prf5)
 
 # Rather, just look at the OOB of the previous model
 round(rf5$err.rate[nrow(rf5$err.rate)], 2)
-
-
 ```
 
 Not too bad, but it requires a full matrix of structured data. How bad does it get if we don't have that? What if, for example, we just have the DART consult?
 
-Can we identify cases where there was likely abuse in the previous dataset? Clustering, perhaps? SVM with plotting, I think, or PCA and labeling by abuse/not abuse
 
-```{r basic NLP}
+## NLP to identify skullfx and br_torso
 
+```{r pred skullfx}
+table(skullfx = x$skullfx, tst_ct = x$tst_ct)
+table(skullfx = x$skullfx, tst_ct = x$tst_mri)
+
+notes <- vector(mode = "list", length = nrow(x))
+for (i in 1:nrow(x)) {
+  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split ="\\N", fixed = TRUE))
+}
+
+# Search for fracture
+skullfx <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Ff]racture", x)))))
+skullfx <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Sk]ull", x)))))
+
+mean(skullfx)
+
+table(skullfx, x$skullfx)
 ```
 
+```{r stem and tokenize}
+sms_corpus <- VCorpus(VectorSource(x$NOTE_TEXT))
+sms_corpus_clean <- tm_map(sms_corpus,
+                           content_transformer(tolower))
+
+sms_corpus_clean <- tm_map(sms_corpus_clean, removeNumbers)
+
+# Remove stopwords
+sms_corpus_clean <- tm_map(sms_corpus_clean,
+                           removeWords, stopwords())
+
+# Remove punctuation
+sms_corpus_clean <- tm_map(sms_corpus_clean, removePunctuation)
+
+# stem
+sms_corpus_clean <- tm_map(sms_corpus_clean, stemDocument)
+
+# remove whitespace
+sms_corpus_clean <- tm_map(sms_corpus_clean, stripWhitespace)
+
+# Tokenize
+sms_dtm <- DocumentTermMatrix(sms_corpus_clean)
+
+# Find frequent words
+sms_freq_words <- findFreqTerms(sms_dtm, 5)
+
+# Filter by frequennt words
+sms_dtm_freq <- sms_dtm[ , sms_freq_words]
+
+# Convert to binary
+convert_counts <- function(x) {
+  x <- ifelse(x > 0, 1, 0)
+}
+
+binary <- apply(sms_dtm_freq, MARGIN = 2,
+                   convert_counts)
+
+rownames(binary) <- x$PAT_ENC_CSN_ID
+
+# Remove a row causing problems in the binary
+# binary <- binary[,-grep("<b0>", colnames(binary))]
+```
+
+```{r svm on the notes corpus}
+mbinary <- data.frame(skullfx = x$skullfx, binary)
+
+train <- mbinary[s,]
+test <- mbinary[-s,]
+
+colnames(test)
+# Tune parameters for an svm model with a radial kernel
+r4 <- tune(svm, skullfx ~ . , data=train, 
+           ranges=list(gamma=10^(-4:1), cost=c(1, 10, 100)), 
+           tunecontrol=tune.control(cross=5))
+# Plot to check the best parameters (supplement?)
+plot(r4)
+
+# model
+p4 <- predict(r3$best.model, test) 
+hist(p4)
+
+skullsvm <- roc(test$skullfx, p4)
+plot(skullsvm)
+```
+
+
+# Future directions
+Can we identify cases where there was likely abuse in the previous dataset? Clustering, perhaps? SVM with plotting, I think, or PCA and labeling by abuse/not abuse
 
