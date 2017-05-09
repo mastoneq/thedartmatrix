@@ -171,7 +171,7 @@ rm(mat)
 
 I'll check the variable importance with and without both of the variables that are significantly correlated.
 
-```{r random forest}
+```{r random forest consult_dart all structured}
 # Create the data frame for plotting
 m <- data.frame(x[c(5:20, 45)])
 m$hemotympanum <- NULL
@@ -230,7 +230,7 @@ predError[1,] <- c("Fits Matrix", materr)
 predError <- rbind(predError, c("Grep DART", greperr))
 ```
 
-```{r random forest}
+```{r random forest for consult_dart train}
 # Create a model training and test set for random forest and SVM
 s <- sample(1:nrow(m), nrow(m)*0.7)
 train <- m[s,]
@@ -239,12 +239,14 @@ test <- m[-s,]
 rf1 <- randomForest(consult_dart ~ . , train, mtry=ncol(m)-1, importance=TRUE)
 prf1 <- predict(rf1, test)
 
+roc_rf <- roc(test$consult_dart, prf1[,2])
+
 rferr <- mean(test$consult_dart != prf1)
 
 predError <- rbind(predError, c("Random Forest", rferr))
 ```
 
-```{r svm model}
+```{r svm model for consult_dart train}
 # Tune parameters for an svm model with a radial kernel
 r3 <- tune(svm, consult_dart ~ . , data=train, 
            ranges=list(gamma=10^(-4:1), cost=c(1, 10, 100)), 
@@ -253,12 +255,20 @@ r3 <- tune(svm, consult_dart ~ . , data=train,
 plot(r3)
 
 # model
-p3 <- predict(r3$best.model, test) 
+p3 <- predict(r3$best.model, test)
+sensitivity(p3, test$consult_dart)
+specificity(p3, test$consult_dart)
+posPredValue(p3, test$consult_dart)
+negPredValue(p3, test$consult_dart)
+
+roc_svm <- roc(test$consult_dart, p3[,2])
 
 # Add prediction error to the data frame
 predError <- rbind(predError, c("SVM Radial Kernel", mean(p3 != test$consult_dart)))
 
 ```
+
+
 
 ```{r roc curve for dart models}
 # Create ROC curve for predicting dart call by fits_matrix vs DART grep
@@ -266,6 +276,8 @@ roc_fits <- roc(response = x$consult_dart, predictor = as.numeric(as.character(x
 roc_dartgrep <- roc(response = x$consult_dart, predictor = dart)
 
 roc_fits$auc
+roc_dartgrep$auc
+
 plotdf <- data.frame(dart_sp = roc_dartgrep$specificities, dart_sen = roc_dartgrep$sensitivities, 
                      mat_sp = roc_fits$specificities, mat_sen = roc_fits$sensitivities)
 
@@ -282,7 +294,7 @@ ggplot(plotdf, aes(plotdf)) +
   ggsave("grepDART_roc.png", height = 4, width = 7.5)
 
 # Garbage collection
-rm(plotdf)
+# rm(plotdf)
 ```
 
 ```{r vars that predict abuse}
@@ -308,7 +320,6 @@ rf2 <- randomForest(abuse ~ ., data = a, mtry=ncol(a)-1, importance=TRUE)
 
 varImpPlot(rf2)
 ```
-
 
 
 ```{r vars that predict whether dart will find abuse}
@@ -461,15 +472,15 @@ for (i in colnames(c)) {
   oobs[i] <- rffull$err.rate[nrow(rffull$err.rate)]
   print(rffull)
   # Split into taining and test
-  train <- mbinary[s,]
-  test <- mbinary[-s,]
+  train2 <- mbinary[s,]
+  test2 <- mbinary[-s,]
   
   # Model
-  try({rftmp[[i]] <- randomForest(f, data = train, mtry=ncol(train)-1, importance=TRUE)
+  try({rftmp[[i]] <- randomForest(f, data = train2, mtry=ncol(train2)-1, importance=TRUE)
   # prediction
-  ptmp[[i]] <- predict(rftmp, test, type = "prob")
+  ptmp[[i]] <- predict(rftmp, test2, type = "prob")
   # roc curve
-  roctmp[[i]] <- roc(test[,1], ptmp[[i]][,2])
+  roctmp[[i]] <- roc(test2[,1], ptmp[[i]][,2])
   #output
   dftmp <- data.frame(var = i, sensitivity = roctmp$sensitivities, 
                       specificity = roctmp$specificities)
@@ -486,7 +497,97 @@ ggplot(backup, aes(x = specificity, y = sensitivity)) +
   ggsave("nlp_allpred_roc.png", height = 4, width = 7.5)
 ```
 
+```{r oob}
+ob <- data.frame(var = names(oobs), oob = oobs)
+
+ggplot(ob, aes(x = reorder(var, -oob), y = oob)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "",
+       y = "Out of Bag Error Estimate") +
+  ggsave("outofbag_nlp.png", height = 4, width = 4)
+
+ob2 <- ob[-grep("dart", ob$var),]
+
+ggplot(ob2, aes(x = reorder(var, -oob), y = oob)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "",
+       y = "Out of Bag Error Estimate") +
+    ggsave("outofbag_nlp_nordart.png", height = 4, width = 4)
+
+```
+
+```{r}
+  m2binary <- data.frame(consult_dart = x$consult_dart, binary)
+  # Ensure factor
+  m2binary[,1] <- as.factor(m2binary[,1])
+  # Ensure no missing values
+  m2binary <- m2binary[complete.cases(m2binary),]
+  # Split into taining and test
+  s <- sample(nrow(binary), nrow(binary)*0.7)
+  train2 <- m2binary[s,]
+  test2 <- m2binary[-s,]
+  
+  rf_dart <- randomForest(consult_dart ~ ., data = train2, mtry=ncol(train2)-1, importance=TRUE)
+
+  prf_dart <- predict(rf_dart, test2)
+ 
+```
+
+
+```{r model metrics}
+ModelMetrics <- function(model, predictions, truth) {
+  sens <- round(sensitivity(predictions, truth),3)
+  spec <- round(specificity(predictions, truth),3)
+  ppv <- round(posPredValue(predictions, truth),3)
+  npv <- round(negPredValue(predictions, truth),3)
+  return(c(model, sens, spec, ppv, npv))
+}
+
+modelcomp <- data.frame(
+  rbind(ModelMetrics("Fits Matrix", x$fits_matrix, x$consult_dart),
+                    ModelMetrics("Grep Dart", as.factor(dart), x$consult_dart),
+                    ModelMetrics("Random Forest (structured)", 
+                                 prf1, test$consult_dart),
+                    ModelMetrics("SVM (structured)", 
+                                 p3, test$consult_dart),
+                    ModelMetrics("Random Forest (NLP)", 
+                                 prf_dart, test2$consult_dart)))
+colnames(modelcomp) <- c("Model", "Sensitivity", "Specificity", "Positive Predictive Value", "Negative Predictive Value")
+
+plottingdf <- modelcomp %>%
+  gather(key = "metric", value = "value", -Model)
+
+ggplot(plottingdf, aes(Model, as.numeric(value))) +
+  geom_bar(stat = "identity", aes(fill = Model)) +
+  facet_wrap(~metric) +
+  labs(y = "") +
+  geom_text(aes(label = value), hjust = 1.5, cex = 3) +
+  coord_flip() +
+  theme(legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsave("consult_dart_modelcomp.png", height = 4, width = 8)
+
+tpv <- as.numeric(as.character(modelcomp$`Positive Predictive Value`)) +
+       as.numeric(as.character(modelcomp$`Negative Predictive Value`))
+names(tpv) <- modelcomp$Model
+tpv
+# ggplot(plottingdf, aes(metric, as.numeric(value), group = Model, color = Model)) +
+#   geom_point() +
+#   geom_path() +
+#   coord_polar()
+
+
+```
 
 # Future directions
 Can we identify cases where there was likely abuse in the previous dataset? Clustering, perhaps? SVM with plotting, I think, or PCA and labeling by abuse/not abuse
+
+```{r}
+sapply(list.of.packages, citation)
+```
 
