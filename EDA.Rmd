@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 # Load the required packages
 list.of.packages <- c("xtable", "ggplot2", "pROC", "RColorBrewer", "corrplot", 
                       "randomForest", "nnet", "lmtest", "e1071", "caret", "tm",
-                      "SnowballC")
+                      "SnowballC", "tidyverse")
 new.packages <- list.of.packages[!(list.of.packages %in% 
                                      installed.packages()[,"Package"])]
 
@@ -46,6 +46,9 @@ for (i in 1:nrow(x)) {
   }
 }
 x$consult_dart <- factor(dart_collapsed)
+
+# Set underdetermined diagnosis to NA
+b$consult_dart_dg[b$consult_dart_dg == 2] <- NA
 
 # Read in variable key that defines classes
 key <- read.csv("variable_key.csv")
@@ -262,6 +265,7 @@ predError <- rbind(predError, c("SVM Radial Kernel", mean(p3 != test$consult_dar
 roc_fits <- roc(response = x$consult_dart, predictor = as.numeric(as.character(x$fits_matrix)))
 roc_dartgrep <- roc(response = x$consult_dart, predictor = dart)
 
+roc_fits$auc
 plotdf <- data.frame(dart_sp = roc_dartgrep$specificities, dart_sen = roc_dartgrep$sensitivities, 
                      mat_sp = roc_fits$specificities, mat_sen = roc_fits$sensitivities)
 
@@ -306,12 +310,10 @@ varImpPlot(rf2)
 ```
 
 
+
 ```{r vars that predict whether dart will find abuse}
 # Predictor variables
 b <- data.frame(x[,c(5:19, 47)])
-
-# Set underdetermined diagnosis to NA
-b$consult_dart_dg[b$consult_dart_dg == 2] <- NA
 
 b <- b[complete.cases(b),]
 
@@ -421,30 +423,67 @@ binary <- apply(sms_dtm_freq, MARGIN = 2,
 
 rownames(binary) <- x$PAT_ENC_CSN_ID
 
-# Remove a row causing problems in the binary
-# binary <- binary[,-grep("<b0>", colnames(binary))]
+# Remove those without variance
+variance <- apply(binary, 2, var)
+binary <- binary[, variance > quantile(variance, 0.5)]
+
+
 ```
 
-```{r svm on the notes corpus}
-mbinary <- data.frame(skullfx = x$skullfx, binary)
+```{r model prediction using the notes corpus}
+# Create data frame for results
+results <- data.frame(var = rep(NA), 
+                      sensitivity = NA, specificity = NA)
+s <- sample(nrow(binary), nrow(binary)*0.7)
+auc <- rep(NA, length(colnames(c)))
+names(auc) <- colnames(c)
+rftmp <- list()
+ptmp <- list()
+roctmp <- list()
+oobs <- auc
+# Create model for predictions by NLP
+for (i in colnames(c)) {
+  # Create dataframe for modeling
+  mbinary <- data.frame(x[,min(grep(i, colnames(x)))], binary)
+  # Rename column
+  colnames(mbinary)[1] <- as.character(i)
+  # Ensure factor
+  mbinary[,1] <- as.factor(mbinary[,1])
+  # Ensure no missing values
+  mbinary <- mbinary[complete.cases(mbinary),]
+  
+  # Get formula
+  f <- as.formula(paste(i, " ~ .", sep = ""))
+  
+  # Random forest on whole model to get out of bag error estimates for rare events
+  try(rffull <- randomForest(f, data = mbinary, mtry=ncol(mbinary)-1, importance=TRUE))
+  # Get out of bag error estimates
+  oobs[i] <- rffull$err.rate[nrow(rffull$err.rate)]
+  print(rffull)
+  # Split into taining and test
+  train <- mbinary[s,]
+  test <- mbinary[-s,]
+  
+  # Model
+  try({rftmp[[i]] <- randomForest(f, data = train, mtry=ncol(train)-1, importance=TRUE)
+  # prediction
+  ptmp[[i]] <- predict(rftmp, test, type = "prob")
+  # roc curve
+  roctmp[[i]] <- roc(test[,1], ptmp[[i]][,2])
+  #output
+  dftmp <- data.frame(var = i, sensitivity = roctmp$sensitivities, 
+                      specificity = roctmp$specificities)
+  auc[i] <- roctmp$auc
+  results <- rbind(results, dftmp)})
+}
+backup <- results[-1,]
 
-train <- mbinary[s,]
-test <- mbinary[-s,]
-
-colnames(test)
-# Tune parameters for an svm model with a radial kernel
-r4 <- tune(svm, skullfx ~ . , data=train, 
-           ranges=list(gamma=10^(-4:1), cost=c(1, 10, 100)), 
-           tunecontrol=tune.control(cross=5))
-# Plot to check the best parameters (supplement?)
-plot(r4)
-
-# model
-p4 <- predict(r3$best.model, test) 
-hist(p4)
-
-skullsvm <- roc(test$skullfx, p4)
-plot(skullsvm)
+i <- colnames(c)[length(colnames(c))]
+ggplot(backup, aes(x = specificity, y = sensitivity)) +
+  geom_line(aes(group = var, color = var)) +
+  scale_x_reverse() +
+  theme_bw() +
+  ggsave("nlp_allpred_roc.png", height = 4, width = 7.5)
 ```
 
 
