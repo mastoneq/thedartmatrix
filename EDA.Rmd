@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 # Load the required packages
 list.of.packages <- c("xtable", "ggplot2", "pROC", "RColorBrewer", "corrplot", 
                       "randomForest", "nnet", "lmtest", "e1071", "caret", "tm",
-                      "SnowballC", "tidyverse")
+                      "SnowballC", "tidyverse", "tsne")
 new.packages <- list.of.packages[!(list.of.packages %in% 
                                      installed.packages()[,"Package"])]
 
@@ -27,6 +27,7 @@ set.seed(12345)
 # Locale problem causing unicode string splitting errors
 Sys.setlocale('LC_ALL','C') 
 ```
+
 
 This is the start of Dan's effort on the final project for CBB750. The intention of this document is to perform some exploratory data analysis and to create summary slides for the presentation.
 
@@ -48,7 +49,7 @@ for (i in 1:nrow(x)) {
 x$consult_dart <- factor(dart_collapsed)
 
 # Set underdetermined diagnosis to NA
-b$consult_dart_dg[b$consult_dart_dg == 2] <- NA
+x$consult_dart_dg[x$consult_dart_dg == 2] <- NA
 
 # Read in variable key that defines classes
 key <- read.csv("variable_key.csv")
@@ -80,6 +81,8 @@ print(xtable(table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)),
 
 table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)
 ```
+
+Clearly the DART team is not being called every time one of the indicators are observed. 
 
 Now I'll look at the frequency of the predictor variables.
 
@@ -138,7 +141,7 @@ ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
 # Garbage collection
 rm(myPalette)
 rm(predacc)
-rm(sf)
+# rm(sf)
 rm(tmeans)
 # rm(dart_collapsed)
 ```
@@ -349,9 +352,31 @@ c <- c[complete.cases(c),]
 
 rf4 <- randomForest(factor(consult_dart_dg) ~ ., data = c, mtry=ncol(c)-1, importance=TRUE)
 
-varImpPlot(rf4)
+rf4plot <- data.frame(Var = rownames(rf4$importance), 
+                      MeanDecreaseAccuracy = rf4$importance[,3],
+                      MeanDecreaseGini = rf4$importance[,4])
 
-rf4
+print(rf4)
+
+rf4plotl <- rf4plot %>%
+  gather(key = "index", value = "value", -Var)
+
+moobs <- match(rf4plotl$Var, names(oobs))
+rf4plotl$oob <- oobs[moobs]
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sf <- scale_color_gradientn(colors = myPalette(100))
+
+ggplot(rf4plotl, aes(reorder(Var,value), value)) +
+  geom_point(size = 4, aes(color = oob)) +
+  coord_flip() +
+  facet_wrap(~index, scales = "free") +
+  labs(x = "",
+       y = "") +
+  theme_bw() +
+  sf +
+  ggsave("rf_abuse_varImp.png", height = 4, width = 8)
+  
+
 ```
 
 
@@ -581,13 +606,65 @@ tpv
 #   geom_path() +
 #   coord_polar()
 
+```
+
+```{r unsupervised clustering}
+pca <- prcomp(binary)
+
+cl <- data.frame(PC1 = pca$x[,1], PC2 = pca$x[,2], abuse = x$consult_dart_dg)
+cl$abuse[is.na(cl$abuse)] <- "U"
+
+ggplot(cl, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = factor(abuse)))
+
+t <- tsne(binary)
+tcl <- data.frame(t, abuse = x$consult_dart_dg)
+
+ggplot(tcl, aes(x = X1, y = X2)) +
+  geom_point(aes(color = factor(abuse)))
+```
+
+```{r abuse imputation}
+set.seed(12345)
+amod <- data.frame(consult_dart_dg = x$consult_dart_dg, binary)
+
+# Which values are NA's
+na <- is.na(amod$consult_dart_dg)
+
+# Train on the non-NA's
+atrain <- amod[!na,]
+atest <- amod[na,]
+
+# Random Forest
+amod_rf <- randomForest(factor(consult_dart_dg) ~ ., data = atrain, mtry=ncol(atrain)-1, importance=TRUE)
+
+print(amod_rf)
+
+pamod_rf <- predict(amod_rf, atest, type = "prob")
+
+
+hist(pamod_rf[,2])
+
+dfa <- as.data.frame(pamod_rf)
+names(dfa) <- c("x0", "x1")
+
+ggplot(dfa, aes(x = x1)) +
+  geom_histogram() +
+  labs(x = "Probability of Abuse") +
+  theme_bw() +
+  geom_vline(xintercept = 0.5) +
+  ggsave("prob_of_abuse.png", width = 6, height = 4)
+
+table(atrain$consult_dart_dg)
+
+table(x$consult_dart_dg, useNA = c("ifany"))
+
+table(pamod_rf)
 
 ```
+
 
 # Future directions
 Can we identify cases where there was likely abuse in the previous dataset? Clustering, perhaps? SVM with plotting, I think, or PCA and labeling by abuse/not abuse
 
-```{r}
-sapply(list.of.packages, citation)
-```
 
