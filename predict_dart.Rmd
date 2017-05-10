@@ -1,0 +1,72 @@
+---
+title: "Predict Dart"
+author: "The Dart Team"
+date: "May 7, 2017"
+output: pdf_document
+---
+
+# Predict the DART
+```{r}
+library(randomForest)
+x <- read.csv("TheDartMatrix-deidentified.csv", as.is = TRUE)
+```
+
+Define parameters
+```{r}
+htma <- c("htma_scalp", "htma_boggy", "htma_frontal", "htma_facial")
+br <- c("br_torso", "br_neck", "br_ear")
+fx <- c("lbfx", "ribfx", "skullfx")
+various <- c("burn", "intracran", "frenulum","arrest", "organ", "subconhem","hemotympanum")
+outcome <- "consult_dart"
+y <- x[,c(htma, br, fx, various, outcome)]
+#summary(y)
+```
+
+Clean variables
+```{r}
+y$consult_dart <- ifelse(y$consult_dart==0, 0, 1)
+#summary(y)
+apply(y, 2, function(z){sum(is.na(z))})
+y[is.na(y$hemotympanum), "hemotympanum"] <- 0
+```
+
+Look at a simple linear model
+```{r}
+lm.m <- lm(consult_dart ~ ., data=y)
+summary(lm.m)$r.squared
+```
+
+Divide to train and test
+```{r}
+set.seed(1234)
+s <- sample(1:nrow(y),0.8*nrow(y),replace = FALSE)
+train <- y[s,]
+test <- y[-s,]
+```
+
+Find optimal varible number to sample at each tree
+```{r}
+n <- ncol(train)-1
+err <- rep(NA, n)
+for(i in 1:n) {
+  rf.m <- randomForest(as.factor(consult_dart) ~ ., ntree=500, mtry=i,
+                       data=train)
+  rf.c <- predict(rf.m, newdata = test)
+  err[i] <- mean(test$consult_dart != rf.c)
+  table(true=test$consult_dart, pred=rf.c)
+}
+```
+
+Plot 
+```{r}
+plot(err, type = "l",
+     xlab="Sampled Variables #", main="RF missclassifcaion error rate")
+text(13,0.12, paste("Min Error = ", round(min(err),4)))
+
+```
+We can see that we reach minial level rather fast
+
+Let's look at the variables importance
+```{r}
+varImpPlot(rf.m, main="Varibale Importance")
+```

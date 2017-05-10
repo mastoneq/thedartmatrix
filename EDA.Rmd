@@ -1,0 +1,593 @@
+---
+title: "The DART Matrix"
+author: "Daniel Spakowicz"
+date: "4/24/2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+# Load the required packages
+list.of.packages <- c("xtable", "ggplot2", "pROC", "RColorBrewer", "corrplot", 
+                      "randomForest", "nnet", "lmtest", "e1071", "caret", "tm",
+                      "SnowballC", "tidyverse")
+new.packages <- list.of.packages[!(list.of.packages %in% 
+                                     installed.packages()[,"Package"])]
+
+# Install missing packages
+if (length(new.packages)) install.packages(new.packages, 
+                                           repos = "http://cran.rstudio.com/")
+# Load required packages
+lapply(list.of.packages, require, character.only = TRUE)
+
+# Set seed
+set.seed(12345)
+
+# Locale problem causing unicode string splitting errors
+Sys.setlocale('LC_ALL','C') 
+```
+
+This is the start of Dan's effort on the final project for CBB750. The intention of this document is to perform some exploratory data analysis and to create summary slides for the presentation.
+
+```{r}
+# Read in data 
+x <- read.csv("TheDartMatrix-deidentified.csv", as.is = TRUE)
+
+# Convert DART to binary
+# Collapse 2 into 1 and 3 into 0
+dart_collapsed <- x$consult_dart
+for (i in 1:nrow(x)) {
+  if (dart_collapsed[i] == 2){
+    dart_collapsed[i] <- 1
+  }
+  if (dart_collapsed[i] == 3){
+    dart_collapsed[i] <- 0
+  }
+}
+x$consult_dart <- factor(dart_collapsed)
+
+# Set underdetermined diagnosis to NA
+b$consult_dart_dg[b$consult_dart_dg == 2] <- NA
+
+# Read in variable key that defines classes
+key <- read.csv("variable_key.csv")
+levels(key$class)
+# Set classes
+factors <- grep("factor", key$class)
+char <- grep("character", key$class)
+int <- grep("integer", key$class)
+num <- grep("numeric", key$class)
+
+x[,factors] <- lapply(x[factors], factor)
+x[,char] <- lapply(x[char], as.character)
+x[,int] <- lapply(x[int], as.integer)
+x[,num] <- lapply(x[num], as.numeric)
+
+# Tidy up
+rm(factors)
+rm(char)
+rm(int)
+rm(num)
+```
+
+Let's look at a quick table of when `fits_matrix` is called and when the DART consult is called.
+
+```{r confusion matrix, results="asis", message=FALSE}
+table(x$fits_matrix)
+print(xtable(table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)),
+      comment = FALSE)
+
+table(fits_matrix = x$fits_matrix, consult_dart = x$consult_dart)
+```
+
+Now I'll look at the frequency of the predictor variables.
+
+```{r variable occurence}
+mat <- data.frame(lapply(x[,5:22], as.numeric))
+means <- data.frame(lapply(mat, function(x) mean(x-1, na.rm = TRUE)))
+tmeans <- data.frame(var = names(means), perc_occurrence = t(means))
+ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
+  geom_bar(stat = "identity", aes(fill = perc_occurrence)) +
+  coord_flip() +
+  labs(y = "Fraction Occurence",
+       x = "Observation") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggsave("var_fracOccurrence.png", height = 4, width = 7.5)
+
+# Tidy up
+rm(mat)
+rm(means)
+# rm(tmeans)
+```
+
+I'll try coloring these bars by the predictive accuracy
+
+```{r occurence with prediction accuracy}
+# Collapse 2 into 1 and 3 into 0
+dart_collapsed <- x$consult_dart
+for (i in 1:nrow(x)) {
+  if (dart_collapsed[i] == 2){
+    dart_collapsed[i] <- 1
+  }
+  if (dart_collapsed[i] == 3){
+    dart_collapsed[i] <- 0
+  }
+}
+dart_collapsed <- factor(dart_collapsed)
+
+# Find the predictive accuracy of each var
+predacc <- apply(x[,5:22], 2, function(x) mean(x == dart_collapsed))
+predacc[is.na(predacc)] <- 0
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sf <- scale_color_gradientn(colors = myPalette(100), limits=c(0.64,0.86))
+
+ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
+  geom_point(stat = "identity", aes(color = predacc, size = predacc)) +
+  coord_flip() +
+  labs(y = "Fraction Occurence",
+       x = "Observation",
+       color = "DART\nPrediction\nAccuracy",
+       size = "DART\nPrediction\nAccuracy") +
+  theme_bw() +
+  sf +
+  ggsave("var_fracOccurrence_predAcc.png", height = 5, width = 4)
+
+# Garbage collection
+rm(myPalette)
+rm(predacc)
+rm(sf)
+rm(tmeans)
+# rm(dart_collapsed)
+```
+
+Which are most correlated (and therefore unlikely to be useful together)?
+
+```{r correlated predictors}
+# Convert to matrix
+mat <- as.matrix(x[,5:20])
+class(mat) <- "numeric"
+
+# Remove hemotympanum
+mat <- mat[,-grep('hemotympanum', colnames(mat))]
+
+# Pearson correlation
+c <- cor(mat)
+
+# Create saved image
+png("var_correlations.png")
+corrplot(c, type = "upper", tl.srt=45)
+dev.off()
+
+# Image for Rmarkdown display
+corrplot(c, type = "upper", tl.srt=45)
+
+#Garbage collection
+rm(c)
+rm(mat)
+```
+
+I'll check the variable importance with and without both of the variables that are significantly correlated.
+
+```{r random forest consult_dart all structured}
+# Create the data frame for plotting
+m <- data.frame(x[c(5:20, 45)])
+m$hemotympanum <- NULL
+
+# Collapse to binary
+m$consult_dart <- dart_collapsed
+
+# Random forest model
+rf0 <- randomForest(consult_dart ~ ., data = m, mtry=ncol(m)-1, importance=TRUE)
+
+rf0$importance
+# Grab variable importance for plotting with ggplot
+imp <- data.frame(Variable = rownames(rf0$importance),
+                  "Mean Decrease Accuracy" = rf0$importance[,3],
+                  "Mean Decrease Gini" = rf0$importance[,4])
+
+imp <- imp %>%
+  gather("index", "value", -Variable)
+
+ggplot(imp, aes(x = reorder(Variable, value), y = value)) +
+  geom_point(size = 4) +
+  coord_flip() +
+  facet_wrap(~index, scales = "free") +
+  theme_bw() +
+  labs(x = "", y = "") +
+  ggsave("randomForest_varImpPlot.png", height = 3, width = 6)
+
+# Garbage collection
+# rm(m)
+rm(imp)
+rm(rf0)
+```
+
+Now I'll start trying to predict the variables. I'll start with `consult_dart`.
+
+```{r pred consult_dart}
+# Convert notes into a list of word strings
+notes <- vector(mode = "list", length = nrow(x))
+for (i in 1:nrow(x)) {
+  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split = "\\\\N", fixed = TRUE))
+}
+
+# Search for DART
+dart <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Dd][Aa][Rr][Tt]", x)))))
+
+# Confusion matrix for using the presence of the word DART as a predictor of dart_consult
+table(dart, consult_dart = dart_collapsed)
+
+# Calculate prediction errors
+materr <- mean(x$fits_matrix != dart_collapsed)
+greperr <- mean(dart != dart_collapsed)
+
+# Bind into a dataframe for comparison with other models
+predError <- data.frame(Method = NA, PredError = NA)
+predError[1,] <- c("Fits Matrix", materr)
+predError <- rbind(predError, c("Grep DART", greperr))
+```
+
+```{r random forest for consult_dart train}
+# Create a model training and test set for random forest and SVM
+s <- sample(1:nrow(m), nrow(m)*0.7)
+train <- m[s,]
+test <- m[-s,]
+
+rf1 <- randomForest(consult_dart ~ . , train, mtry=ncol(m)-1, importance=TRUE)
+prf1 <- predict(rf1, test)
+
+roc_rf <- roc(test$consult_dart, prf1[,2])
+
+rferr <- mean(test$consult_dart != prf1)
+
+predError <- rbind(predError, c("Random Forest", rferr))
+```
+
+```{r svm model for consult_dart train}
+# Tune parameters for an svm model with a radial kernel
+r3 <- tune(svm, consult_dart ~ . , data=train, 
+           ranges=list(gamma=10^(-4:1), cost=c(1, 10, 100)), 
+           tunecontrol=tune.control(cross=5))
+# Plot to check the best parameters (supplement?)
+plot(r3)
+
+# model
+p3 <- predict(r3$best.model, test)
+sensitivity(p3, test$consult_dart)
+specificity(p3, test$consult_dart)
+posPredValue(p3, test$consult_dart)
+negPredValue(p3, test$consult_dart)
+
+roc_svm <- roc(test$consult_dart, p3[,2])
+
+# Add prediction error to the data frame
+predError <- rbind(predError, c("SVM Radial Kernel", mean(p3 != test$consult_dart)))
+
+```
+
+
+
+```{r roc curve for dart models}
+# Create ROC curve for predicting dart call by fits_matrix vs DART grep
+roc_fits <- roc(response = x$consult_dart, predictor = as.numeric(as.character(x$fits_matrix)))
+roc_dartgrep <- roc(response = x$consult_dart, predictor = dart)
+
+roc_fits$auc
+roc_dartgrep$auc
+
+plotdf <- data.frame(dart_sp = roc_dartgrep$specificities, dart_sen = roc_dartgrep$sensitivities, 
+                     mat_sp = roc_fits$specificities, mat_sen = roc_fits$sensitivities)
+
+ggplot(plotdf, aes(plotdf)) +
+  geom_line(aes(x = dart_sp, y = dart_sen, color = "red")) +
+  geom_line(aes(x = mat_sp, y = mat_sen, color = "blue")) +
+  scale_x_reverse() +
+  labs(x = "Specificity",
+       y = "Sensitivity") +
+  theme_bw() +
+  scale_color_discrete(name="Method",
+                         breaks=c("blue", "red"),
+                         labels=c("Fits Matrix", "Grep for DART")) +
+  ggsave("grepDART_roc.png", height = 4, width = 7.5)
+
+# Garbage collection
+# rm(plotdf)
+```
+
+```{r vars that predict abuse}
+table(x$consult_dart_dg)
+
+# Predictor variables
+a <- data.frame(x[,5:19])
+
+# Response variable
+abuse <- x$consult_dart_dg
+
+# Set NA to 0
+abuse[is.na(abuse)] <- 0
+
+# Set underdetermined diagnosis to NA
+abuse[abuse == 2] <- NA
+
+a <- data.frame(a, abuse)
+
+a <- a[complete.cases(a),]
+
+rf2 <- randomForest(abuse ~ ., data = a, mtry=ncol(a)-1, importance=TRUE)
+
+varImpPlot(rf2)
+```
+
+
+```{r vars that predict whether dart will find abuse}
+# Predictor variables
+b <- data.frame(x[,c(5:19, 47)])
+
+b <- b[complete.cases(b),]
+
+rf3 <- randomForest(factor(consult_dart_dg) ~ ., data = b, mtry=ncol(b)-1, importance=TRUE)
+
+varImpPlot(rf3)
+```
+
+What about if you know the dart information (which we should... it'll probably be the most accurate info)? Does that help?
+
+```{r prediction of abuse including dart}
+# Predictor variables
+c <- data.frame(x[,c(5:19, 45, 47)])
+
+# Set non-darts dg to 0??? Not sure about this
+c$consult_dart_dg[is.na(c$consult_dart_dg)] <- 0
+
+# Set underdetermined diagnosis to NA
+c$consult_dart_dg[c$consult_dart_dg == 2] <- NA
+
+c <- c[complete.cases(c),]
+
+rf4 <- randomForest(factor(consult_dart_dg) ~ ., data = c, mtry=ncol(c)-1, importance=TRUE)
+
+varImpPlot(rf4)
+
+rf4
+```
+
+
+```{r prediction accuracy for abuse}
+# Create a model training and test set for random forest and SVM
+s <- sample(1:nrow(c), nrow(c)*0.7)
+train <- c[s,]
+test <- c[-s,]
+
+rf5 <- randomForest(factor(consult_dart_dg) ~ . , train, mtry=ncol(c)-1, importance=TRUE, do.trace = 100)
+
+prf5 <- predict(rf5, test)
+
+### ERROR IS 1! TOO FEW VALUES TO ESTIMATE ACCURACY!
+rferr <- mean(test$consult_dart_dg != prf5)
+
+# Rather, just look at the OOB of the previous model
+round(rf5$err.rate[nrow(rf5$err.rate)], 2)
+```
+
+Not too bad, but it requires a full matrix of structured data. How bad does it get if we don't have that? What if, for example, we just have the DART consult?
+
+
+## NLP to identify skullfx and br_torso
+
+```{r pred skullfx}
+table(skullfx = x$skullfx, tst_ct = x$tst_ct)
+table(skullfx = x$skullfx, tst_ct = x$tst_mri)
+
+notes <- vector(mode = "list", length = nrow(x))
+for (i in 1:nrow(x)) {
+  notes[[i]] <- unlist(strsplit(as.character(x$NOTE_TEXT[i]), split ="\\N", fixed = TRUE))
+}
+
+# Search for fracture
+skullfx <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Ff]racture", x)))))
+skullfx <- as.numeric(unlist(lapply(notes, function(x) any(grep("[Sk]ull", x)))))
+
+mean(skullfx)
+
+table(skullfx, x$skullfx)
+```
+
+```{r stem and tokenize}
+sms_corpus <- VCorpus(VectorSource(x$NOTE_TEXT))
+sms_corpus_clean <- tm_map(sms_corpus,
+                           content_transformer(tolower))
+
+sms_corpus_clean <- tm_map(sms_corpus_clean, removeNumbers)
+
+# Remove stopwords
+sms_corpus_clean <- tm_map(sms_corpus_clean,
+                           removeWords, stopwords())
+
+# Remove punctuation
+sms_corpus_clean <- tm_map(sms_corpus_clean, removePunctuation)
+
+# stem
+sms_corpus_clean <- tm_map(sms_corpus_clean, stemDocument)
+
+# remove whitespace
+sms_corpus_clean <- tm_map(sms_corpus_clean, stripWhitespace)
+
+# Tokenize
+sms_dtm <- DocumentTermMatrix(sms_corpus_clean)
+
+# Find frequent words
+sms_freq_words <- findFreqTerms(sms_dtm, 5)
+
+# Filter by frequennt words
+sms_dtm_freq <- sms_dtm[ , sms_freq_words]
+
+# Convert to binary
+convert_counts <- function(x) {
+  x <- ifelse(x > 0, 1, 0)
+}
+
+binary <- apply(sms_dtm_freq, MARGIN = 2,
+                   convert_counts)
+
+rownames(binary) <- x$PAT_ENC_CSN_ID
+
+# Remove those without variance
+variance <- apply(binary, 2, var)
+binary <- binary[, variance > quantile(variance, 0.5)]
+
+
+```
+
+```{r model prediction using the notes corpus}
+# Create data frame for results
+results <- data.frame(var = rep(NA), 
+                      sensitivity = NA, specificity = NA)
+s <- sample(nrow(binary), nrow(binary)*0.7)
+auc <- rep(NA, length(colnames(c)))
+names(auc) <- colnames(c)
+rftmp <- list()
+ptmp <- list()
+roctmp <- list()
+oobs <- auc
+# Create model for predictions by NLP
+for (i in colnames(c)) {
+  # Create dataframe for modeling
+  mbinary <- data.frame(x[,min(grep(i, colnames(x)))], binary)
+  # Rename column
+  colnames(mbinary)[1] <- as.character(i)
+  # Ensure factor
+  mbinary[,1] <- as.factor(mbinary[,1])
+  # Ensure no missing values
+  mbinary <- mbinary[complete.cases(mbinary),]
+  
+  # Get formula
+  f <- as.formula(paste(i, " ~ .", sep = ""))
+  
+  # Random forest on whole model to get out of bag error estimates for rare events
+  try(rffull <- randomForest(f, data = mbinary, mtry=ncol(mbinary)-1, importance=TRUE))
+  # Get out of bag error estimates
+  oobs[i] <- rffull$err.rate[nrow(rffull$err.rate)]
+  print(rffull)
+  # Split into taining and test
+  train2 <- mbinary[s,]
+  test2 <- mbinary[-s,]
+  
+  # Model
+  try({rftmp[[i]] <- randomForest(f, data = train2, mtry=ncol(train2)-1, importance=TRUE)
+  # prediction
+  ptmp[[i]] <- predict(rftmp, test2, type = "prob")
+  # roc curve
+  roctmp[[i]] <- roc(test2[,1], ptmp[[i]][,2])
+  #output
+  dftmp <- data.frame(var = i, sensitivity = roctmp$sensitivities, 
+                      specificity = roctmp$specificities)
+  auc[i] <- roctmp$auc
+  results <- rbind(results, dftmp)})
+}
+backup <- results[-1,]
+
+i <- colnames(c)[length(colnames(c))]
+ggplot(backup, aes(x = specificity, y = sensitivity)) +
+  geom_line(aes(group = var, color = var)) +
+  scale_x_reverse() +
+  theme_bw() +
+  ggsave("nlp_allpred_roc.png", height = 4, width = 7.5)
+```
+
+```{r oob}
+ob <- data.frame(var = names(oobs), oob = oobs)
+
+ggplot(ob, aes(x = reorder(var, -oob), y = oob)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "",
+       y = "Out of Bag Error Estimate") +
+  ggsave("outofbag_nlp.png", height = 4, width = 4)
+
+ob2 <- ob[-grep("dart", ob$var),]
+
+ggplot(ob2, aes(x = reorder(var, -oob), y = oob)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "",
+       y = "Out of Bag Error Estimate") +
+    ggsave("outofbag_nlp_nordart.png", height = 4, width = 4)
+
+```
+
+```{r}
+  m2binary <- data.frame(consult_dart = x$consult_dart, binary)
+  # Ensure factor
+  m2binary[,1] <- as.factor(m2binary[,1])
+  # Ensure no missing values
+  m2binary <- m2binary[complete.cases(m2binary),]
+  # Split into taining and test
+  s <- sample(nrow(binary), nrow(binary)*0.7)
+  train2 <- m2binary[s,]
+  test2 <- m2binary[-s,]
+  
+  rf_dart <- randomForest(consult_dart ~ ., data = train2, mtry=ncol(train2)-1, importance=TRUE)
+
+  prf_dart <- predict(rf_dart, test2)
+ 
+```
+
+
+```{r model metrics}
+ModelMetrics <- function(model, predictions, truth) {
+  sens <- round(sensitivity(predictions, truth),3)
+  spec <- round(specificity(predictions, truth),3)
+  ppv <- round(posPredValue(predictions, truth),3)
+  npv <- round(negPredValue(predictions, truth),3)
+  return(c(model, sens, spec, ppv, npv))
+}
+
+modelcomp <- data.frame(
+  rbind(ModelMetrics("Fits Matrix", x$fits_matrix, x$consult_dart),
+                    ModelMetrics("Grep Dart", as.factor(dart), x$consult_dart),
+                    ModelMetrics("Random Forest (structured)", 
+                                 prf1, test$consult_dart),
+                    ModelMetrics("SVM (structured)", 
+                                 p3, test$consult_dart),
+                    ModelMetrics("Random Forest (NLP)", 
+                                 prf_dart, test2$consult_dart)))
+colnames(modelcomp) <- c("Model", "Sensitivity", "Specificity", "Positive Predictive Value", "Negative Predictive Value")
+
+plottingdf <- modelcomp %>%
+  gather(key = "metric", value = "value", -Model)
+
+ggplot(plottingdf, aes(Model, as.numeric(value))) +
+  geom_bar(stat = "identity", aes(fill = Model)) +
+  facet_wrap(~metric) +
+  labs(y = "") +
+  geom_text(aes(label = value), hjust = 1.5, cex = 3) +
+  coord_flip() +
+  theme(legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsave("consult_dart_modelcomp.png", height = 4, width = 8)
+
+tpv <- as.numeric(as.character(modelcomp$`Positive Predictive Value`)) +
+       as.numeric(as.character(modelcomp$`Negative Predictive Value`))
+names(tpv) <- modelcomp$Model
+tpv
+# ggplot(plottingdf, aes(metric, as.numeric(value), group = Model, color = Model)) +
+#   geom_point() +
+#   geom_path() +
+#   coord_polar()
+
+
+```
+
+# Future directions
+Can we identify cases where there was likely abuse in the previous dataset? Clustering, perhaps? SVM with plotting, I think, or PCA and labeling by abuse/not abuse
+
+```{r}
+sapply(list.of.packages, citation)
+```
+
