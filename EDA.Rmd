@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 # Load the required packages
 list.of.packages <- c("xtable", "ggplot2", "pROC", "RColorBrewer", "corrplot", 
                       "randomForest", "nnet", "lmtest", "e1071", "caret", "tm",
-                      "SnowballC", "tidyverse", "tsne")
+                      "SnowballC", "tidyverse", "tsne", "psych")
 new.packages <- list.of.packages[!(list.of.packages %in% 
                                      installed.packages()[,"Package"])]
 
@@ -47,6 +47,8 @@ for (i in 1:nrow(x)) {
   }
 }
 x$consult_dart <- factor(dart_collapsed)
+
+table(x$consult_dart)
 
 # Set underdetermined diagnosis to NA
 x$consult_dart_dg[x$consult_dart_dg == 2] <- NA
@@ -167,8 +169,10 @@ dev.off()
 # Image for Rmarkdown display
 corrplot(c, type = "upper", tl.srt=45)
 
+tet <- tetrachoric(table(x$br_neck, x$br_torso))
+
 #Garbage collection
-rm(c)
+# rm(c)
 rm(mat)
 ```
 
@@ -269,8 +273,8 @@ roc_svm <- roc(test$consult_dart, p3[,2])
 # Add prediction error to the data frame
 predError <- rbind(predError, c("SVM Radial Kernel", mean(p3 != test$consult_dart)))
 
-```
 
+```
 
 
 ```{r roc curve for dart models}
