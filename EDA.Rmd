@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 # Load the required packages
 list.of.packages <- c("xtable", "ggplot2", "pROC", "RColorBrewer", "corrplot", 
                       "randomForest", "nnet", "lmtest", "e1071", "caret", "tm",
-                      "SnowballC", "tidyverse", "tsne", "psych")
+                      "SnowballC", "tidyverse", "tsne", "psych", "googlesheets")
 new.packages <- list.of.packages[!(list.of.packages %in% 
                                      installed.packages()[,"Package"])]
 
@@ -31,7 +31,7 @@ Sys.setlocale('LC_ALL','C')
 
 This is the start of Dan's effort on the final project for CBB750. The intention of this document is to perform some exploratory data analysis and to create summary slides for the presentation.
 
-```{r}
+```{r read in data and set classes}
 # Read in data 
 x <- read.csv("TheDartMatrix-deidentified.csv", as.is = TRUE)
 
@@ -48,14 +48,13 @@ for (i in 1:nrow(x)) {
 }
 x$consult_dart <- factor(dart_collapsed)
 
-table(x$consult_dart)
-
-# Set underdetermined diagnosis to NA
+# Set underdetermined abuse diagnosis to NA
 x$consult_dart_dg[x$consult_dart_dg == 2] <- NA
 
-# Read in variable key that defines classes
-key <- read.csv("variable_key.csv")
-levels(key$class)
+# Read in variable key from google drive that defines all of the classes 
+sheet <- gs_title("variable_key")
+key <- gs_read(sheet)
+
 # Set classes
 factors <- grep("factor", key$class)
 char <- grep("character", key$class)
@@ -109,26 +108,16 @@ rm(means)
 
 I'll try coloring these bars by the predictive accuracy
 
-```{r occurence with prediction accuracy}
-# Collapse 2 into 1 and 3 into 0
-dart_collapsed <- x$consult_dart
-for (i in 1:nrow(x)) {
-  if (dart_collapsed[i] == 2){
-    dart_collapsed[i] <- 1
-  }
-  if (dart_collapsed[i] == 3){
-    dart_collapsed[i] <- 0
-  }
-}
-dart_collapsed <- factor(dart_collapsed)
-
+```{r variable occurence with prediction accuracy}
 # Find the predictive accuracy of each var
 predacc <- apply(x[,5:22], 2, function(x) mean(x == dart_collapsed))
 predacc[is.na(predacc)] <- 0
 
+# Create custom color palette for the points
 myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
 sf <- scale_color_gradientn(colors = myPalette(100), limits=c(0.64,0.86))
 
+# Create plot
 ggplot(tmeans, aes(x = reorder(var, perc_occurrence), y = perc_occurrence)) +
   geom_point(stat = "identity", aes(color = predacc, size = predacc)) +
   coord_flip() +
@@ -158,8 +147,10 @@ class(mat) <- "numeric"
 # Remove hemotympanum
 mat <- mat[,-grep('hemotympanum', colnames(mat))]
 
-# Pearson correlation
+# Pearson correlation 
+# ## NOTE: prob not the best correlation method -- tetrachoric
 c <- cor(mat)
+# tet <- tetrachoric(table(x$br_neck, x$br_torso))
 
 # Create saved image
 png("var_correlations.png")
@@ -169,16 +160,14 @@ dev.off()
 # Image for Rmarkdown display
 corrplot(c, type = "upper", tl.srt=45)
 
-tet <- tetrachoric(table(x$br_neck, x$br_torso))
-
 #Garbage collection
 # rm(c)
 rm(mat)
 ```
 
-I'll check the variable importance with and without both of the variables that are significantly correlated.
+I'll check the variable importance with and without including both of the variables that are significantly correlated.
 
-```{r random forest consult_dart all structured}
+```{r random forest for consult_dart including all structured variables}
 # Create the data frame for plotting
 m <- data.frame(x[c(5:20, 45)])
 m$hemotympanum <- NULL
@@ -237,7 +226,7 @@ predError[1,] <- c("Fits Matrix", materr)
 predError <- rbind(predError, c("Grep DART", greperr))
 ```
 
-```{r random forest for consult_dart train}
+```{r random forest for consult_dart split into train and test}
 # Create a model training and test set for random forest and SVM
 s <- sample(1:nrow(m), nrow(m)*0.7)
 train <- m[s,]
@@ -275,7 +264,6 @@ predError <- rbind(predError, c("SVM Radial Kernel", mean(p3 != test$consult_dar
 
 
 ```
-
 
 ```{r roc curve for dart models}
 # Create ROC curve for predicting dart call by fits_matrix vs DART grep
@@ -316,27 +304,26 @@ abuse <- x$consult_dart_dg
 # Set NA to 0
 abuse[is.na(abuse)] <- 0
 
-# Set underdetermined diagnosis to NA
-abuse[abuse == 2] <- NA
-
+# Create dataframe of just the vars of interest
 a <- data.frame(a, abuse)
-
+# Ensure no NAs
 a <- a[complete.cases(a),]
 
+# Random forest model
 rf2 <- randomForest(abuse ~ ., data = a, mtry=ncol(a)-1, importance=TRUE)
-
+# Variable importance plot of the model
 varImpPlot(rf2)
 ```
 
 
-```{r vars that predict whether dart will find abuse}
-# Predictor variables
+```{r predicting abuse diagnosis from structured vars}
+# Create dataframe for this model
 b <- data.frame(x[,c(5:19, 47)])
-
+# Ensure no NAs
 b <- b[complete.cases(b),]
-
+# Random Forest model
 rf3 <- randomForest(factor(consult_dart_dg) ~ ., data = b, mtry=ncol(b)-1, importance=TRUE)
-
+# Variable importance plot
 varImpPlot(rf3)
 ```
 
@@ -348,9 +335,6 @@ c <- data.frame(x[,c(5:19, 45, 47)])
 
 # Set non-darts dg to 0??? Not sure about this
 c$consult_dart_dg[is.na(c$consult_dart_dg)] <- 0
-
-# Set underdetermined diagnosis to NA
-c$consult_dart_dg[c$consult_dart_dg == 2] <- NA
 
 c <- c[complete.cases(c),]
 
@@ -471,7 +455,7 @@ binary <- binary[, variance > quantile(variance, 0.5)]
 ```
 
 ```{r model prediction using the notes corpus}
-# Create data frame for results
+# Preallocate memory for variables during for loop
 results <- data.frame(var = rep(NA), 
                       sensitivity = NA, specificity = NA)
 s <- sample(nrow(binary), nrow(binary)*0.7)
@@ -500,10 +484,11 @@ for (i in colnames(c)) {
   # Get out of bag error estimates
   oobs[i] <- rffull$err.rate[nrow(rffull$err.rate)]
   print(rffull)
+  
+  
   # Split into taining and test
   train2 <- mbinary[s,]
   test2 <- mbinary[-s,]
-  
   # Model
   try({rftmp[[i]] <- randomForest(f, data = train2, mtry=ncol(train2)-1, importance=TRUE)
   # prediction
@@ -526,7 +511,7 @@ ggplot(backup, aes(x = specificity, y = sensitivity)) +
   ggsave("nlp_allpred_roc.png", height = 4, width = 7.5)
 ```
 
-```{r oob}
+```{r out of bag error plot}
 ob <- data.frame(var = names(oobs), oob = oobs)
 
 ggplot(ob, aes(x = reorder(var, -oob), y = oob)) +
@@ -549,7 +534,8 @@ ggplot(ob2, aes(x = reorder(var, -oob), y = oob)) +
 
 ```
 
-```{r}
+```{r prediction of consult_dart using NLP}
+  # Create dataframe where binary is the binarized NLP results
   m2binary <- data.frame(consult_dart = x$consult_dart, binary)
   # Ensure factor
   m2binary[,1] <- as.factor(m2binary[,1])
@@ -560,8 +546,10 @@ ggplot(ob2, aes(x = reorder(var, -oob), y = oob)) +
   train2 <- m2binary[s,]
   test2 <- m2binary[-s,]
   
+  # Random forest model using all nlp
   rf_dart <- randomForest(consult_dart ~ ., data = train2, mtry=ncol(train2)-1, importance=TRUE)
 
+  # Predict on the test set
   prf_dart <- predict(rf_dart, test2)
  
 ```
@@ -612,15 +600,20 @@ tpv
 
 ```
 
+Do consult_dart_dg results cluster by whether abuse was diagnosed? If so, can unsupervised clustering of the NA variables be used to infer whether abuse occurred for each NA? The hypothesis would be that there should be no abuse among the consult_dart_dg NAs.
+
 ```{r unsupervised clustering}
+# Principle components analysis of NLP
 pca <- prcomp(binary)
 
+# Create dataframe for plotting with PC1, 2 and the response var
 cl <- data.frame(PC1 = pca$x[,1], PC2 = pca$x[,2], abuse = x$consult_dart_dg)
 cl$abuse[is.na(cl$abuse)] <- "U"
 
 ggplot(cl, aes(x = PC1, y = PC2)) +
   geom_point(aes(color = factor(abuse)))
 
+# Also try unsupervised clustering using tSNE
 t <- tsne(binary)
 tcl <- data.frame(t, abuse = x$consult_dart_dg)
 
@@ -628,8 +621,12 @@ ggplot(tcl, aes(x = X1, y = X2)) +
   geom_point(aes(color = factor(abuse)))
 ```
 
+The consult_dart_dg 1's and 0's are not clustering together, so this cannot be used to infer the NAs with confidence. Instead I'll try to impute them from a random forest model.
+
 ```{r abuse imputation}
 set.seed(12345)
+
+# Create dataframe of abuse with all nlp results
 amod <- data.frame(consult_dart_dg = x$consult_dart_dg, binary)
 
 # Which values are NA's
@@ -642,16 +639,14 @@ atest <- amod[na,]
 # Random Forest
 amod_rf <- randomForest(factor(consult_dart_dg) ~ ., data = atrain, mtry=ncol(atrain)-1, importance=TRUE)
 
-print(amod_rf)
-
+# Prediction of NA's
 pamod_rf <- predict(amod_rf, atest, type = "prob")
 
-
-hist(pamod_rf[,2])
-
+# Create dataframe of the result
 dfa <- as.data.frame(pamod_rf)
 names(dfa) <- c("x0", "x1")
 
+# Plot
 ggplot(dfa, aes(x = x1)) +
   geom_histogram() +
   labs(x = "Probability of Abuse") +
@@ -659,16 +654,7 @@ ggplot(dfa, aes(x = x1)) +
   geom_vline(xintercept = 0.5) +
   ggsave("prob_of_abuse.png", width = 6, height = 4)
 
-table(atrain$consult_dart_dg)
-
-table(x$consult_dart_dg, useNA = c("ifany"))
-
-table(pamod_rf)
-
 ```
 
-
-# Future directions
-Can we identify cases where there was likely abuse in the previous dataset? Clustering, perhaps? SVM with plotting, I think, or PCA and labeling by abuse/not abuse
 
 
